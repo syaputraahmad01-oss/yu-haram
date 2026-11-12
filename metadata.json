@@ -1,0 +1,6 @@
+{
+  "name": "YUHA",
+  "description": "YUHA - Hybrid Cloud IDE with 15 Architecture Foundations, multi-model AI orchestration, sandboxed execution, and continuous verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

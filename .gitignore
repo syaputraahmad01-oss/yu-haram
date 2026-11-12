@@ -1,7 +1,17 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
 
 # next.js
 /.next/
@@ -10,18 +20,50 @@
 # production
 /build
 
+# misc
+.DS_Store
+*.pem
+
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files (can opt-in for committing if needed)
 .env*
 
 # vercel
 .vercel
 
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+local-*
+.claude
+.z-ai-config
+*.log
+dev.log
+dev.out.log
+test
+prompt
+
+server.log
+# Skills directory
+/skills/
+# Internal engineering assets: never shipped, never served, never committed
+/private-assets/
+
+# Keep the env template tracked while real env files stay ignored
+!.env.example
+.data/
+
+# User uploads & retired SQLite artifacts: kept on disk, never in git
+/upload/
+/db/*.db
+/db/*.sqlite
+/db/backups/
+
+# Dev daemon pid file
+/.zscripts/dev.pid

@@ -1,0 +1,229 @@
+// YUHA — Supabase PostgreSQL schema (Prisma 6, provider postgresql).
+//
+// Migration notes (SQLite → PostgreSQL, 2026-11-12):
+//  - IDs stay cuid() so migrated rows keep their identity.
+//  - Field names stay camelCase (Prisma quotes identifiers; the SQLite
+//    scaffold used the same convention).
+//  - Postgres-native types where they matter: native enums (MessageRole,
+//    MemoryKind — impossible in SQLite), jsonb for settings blobs,
+//    DECIMAL(12,6) for money (SQLite had no exact decimal).
+//  - Every FK column gets an explicit index (PostgreSQL does NOT auto-index
+//    foreign keys; SQLite did).
+//  - ProjectFile.content is nullable + storageKey: file bodies may live in
+//    object storage later (Supabase Storage/R2) without another migration —
+//    large files must not be forced into PostgreSQL (directive Phase 9).
+//  - The SQLite-era scaffold models User/Post are preserved (Post now gains
+//    its proper relation; additive, no field removed).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // transaction pooler (runtime queries)
+  directUrl = env("DIRECT_URL") // session pooler (migrations & admin)
+}
+
+// ─── Enums (PostgreSQL-native; SQLite had no enum support) ──────────────────
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+enum MemoryKind {
+  PREFERENCE
+  FACT
+  PATTERN
+}
+
+// ─── Auth foundation (schema only; no auth flow is wired yet) ───────────────
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String?
+  // Nullable: ready for OAuth-first flows; plaintext is never stored.
+  hashedPassword String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  posts          Post[]
+  sessions       Session[]
+  projects       Project[]
+  aiUsage        AiUsage[]
+  modelConfigs   ModelConfig[]
+  settings       UserSettings?
+  agentMemories  AgentMemory[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  // Opaque session token is stored HASHED (lookup by hash); a database dump
+  // must never contain usable tokens.
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt]) // cleanup scans
+}
+
+// ─── Workspace domain ────────────────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  description String?
+  // e.g. "vite-react-ts" — mirrors the generator the workspace already uses.
+  framework   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  files         ProjectFile[]
+  conversations Conversation[]
+  agentMemories AgentMemory[]
+
+  @@index([ownerId, updatedAt])
+}
+
+model ProjectFile {
+  id        String   @id @default(cuid())
+  projectId String
+  path      String
+  // Null when the body lives in object storage (storageKey set instead).
+  content   String?
+  storageKey String?
+  bytes     Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, path])
+  @@index([projectId])
+}
+
+// ─── AI conversations ────────────────────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(cuid())
+  projectId String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project  Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([projectId, updatedAt])
+}
+
+model Message {
+  id               String      @id @default(cuid())
+  conversationId   String
+  role             MessageRole
+  content          String
+  model            String?
+  provider         String?
+  promptTokens     Int?
+  completionTokens Int?
+  createdAt        DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model AiUsage {
+  id               String   @id @default(cuid())
+  userId           String
+  provider         String
+  model            String
+  promptTokens     Int
+  completionTokens Int
+  // Exact decimal money (USD); PostgreSQL DECIMAL, not float.
+  costUsd          Decimal  @db.Decimal(12, 6)
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// ─── Model configuration & user settings ────────────────────────────────────
+
+model ModelConfig {
+  id        String  @id @default(cuid())
+  userId    String
+  provider  String
+  model     String
+  isDefault Boolean @default(false)
+  settings  Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, model])
+}
+
+model UserSettings {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  settings  Json
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── Agent memory ────────────────────────────────────────────────────────────
+
+model AgentMemory {
+  id        String     @id @default(cuid())
+  userId    String
+  projectId String?
+  kind      MemoryKind
+  content   String
+  salience  Float      @default(0.5)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, kind])
+  @@index([projectId])
+}
+
+// ─── Ops: distributed rate-limit windows (Phase 7) ──────────────────────────
+// Backend for YUHA_RATE_LIMIT_BACKEND=postgres: fixed windows shared by every
+// YUHA instance connected to this database (multi-machine deployments).
+
+model RateLimitWindow {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+}
+
+// ─── SQLite-era scaffold model, preserved ───────────────────────────────────
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([authorId])
+}
