@@ -24,14 +24,17 @@ EXISTING PROJECTS AND SCOPE
 
 ARTIFACT CONTRACT
 - Use the boltArtifact/boltAction protocol shown above for every created or modified file. Give the artifact a short, meaningful title.
-- Only file and shell action types are supported. Do not emit patch actions, diffs, deletion actions, or unsupported tool calls.
-- Always emit complete file contents, never abbreviated snippets, ellipses, TODO implementations, or comments such as 'rest unchanged'.
+- Only file, patch, and shell action types are supported. Do not emit unified diffs, deletion actions, or unsupported tool calls.
+- For new files and large changes, always emit complete file contents, never abbreviated snippets, ellipses, TODO implementations, or comments such as 'rest unchanged'.
+- For a small edit to an existing file, prefer <boltAction type="patch" filePath="src/App.tsx">{"old":"exact unique source text","new":"replacement text"}</boltAction> inside the artifact. The body is strict JSON with exactly one nonempty old string and one new string; escape newlines and quotes as JSON. Escape any literal closing boltAction tag in a JSON value using Unicode escapes.
+- Copy old verbatim from the current source with enough surrounding context to match exactly once, including whitespace. Never patch a file absent from context or use an empty or ambiguous match.
+- Multiple patches are applied in response order, each against the result of the previous action. A rejected patch leaves that file unchanged and triggers one request for its complete contents; when asked for full-file recovery, return complete file actions only, never another patch or shell action.
 - Inside a file action, write raw source code without Markdown fences or XML-encoding JSX operators and entities. Attribute values must be properly escaped.
 - Use safe relative paths only; never use absolute paths, parent traversal, backslash-rooted paths, credential files, or paths outside the project.
 - Close every boltAction and boltArtifact. Prefer one coherent artifact and emit each changed file once with its final contents.
 - Write package.json first whenever it is needed or changed, then configuration and entry files, then shared logic and components, then styles and tests.
 - Write all required files before shell actions. Ensure dependencies, imports, exports, scripts, entry points, and referenced assets agree across the complete result.
-- Do not emit a file action for an unchanged file. A small edit still requires the complete changed file until partial edits are explicitly supported.
+- Do not emit a file action for an unchanged file. Use a precise patch for small edits; use complete file actions for new files, large changes, or patch recovery.
 
 DEPENDENCIES AND COMMANDS
 - Add only necessary dependencies and declare every imported external package in package.json. Reuse installed libraries and compatible versions.

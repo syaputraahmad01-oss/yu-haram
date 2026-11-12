@@ -16,7 +16,7 @@ import { generationWorksKeyless, modelOption, type ModelOption } from '@/lib/ai/
 import { isModelConsented } from '@/components/settings/model-cost-consent'
 import { useModelCatalog } from '@/hooks/useModelCatalog'
 import { PROVIDERS } from '@/lib/constants/models'
-import { applyWorkspaceFiles, executeWorkspaceCommand, executeWorkspaceCommandWithOutput } from '@/lib/workspace/actions'
+import { applyWorkspaceFiles, applyWorkspaceResponse, executeWorkspaceCommand, executeWorkspaceCommandWithOutput } from '@/lib/workspace/actions'
 import { runProject } from '@/lib/webcontainer'
 import type { ParsedFile } from '@/types'
 import { toast } from 'sonner'
@@ -340,13 +340,32 @@ export function useAIChat() {
 
       if (!fullText.trim()) throw new Error('Model returned no text. Test this model in Settings or select another model.')
 
-      const actions = parseAIResponseActions(fullText)
-      const parsed = serverFiles.length ? serverFiles : parser.getFiles().length ? parser.getFiles() : actions.files
-      chat.updateMessage(assistantId, { files: parsed })
-      if (parsed.length) {
-        savePreChangeSnapshot()
-        await applyFiles(parsed)
+      const recoverFullFiles = async (instruction: string, recoveryFiles = files): Promise<string> => {
+        toast.warning('Patch tidak cocok. Meminta file utuh tanpa mengubah file sumber.')
+        const recoveryMessages = [...mappedMessages, { role: 'user', content: instruction }]
+        const recovery = await fetch('/api/chat', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+          body: JSON.stringify({
+            provider: settings.activeProvider, model: settings.activeModel,
+            messages: trimClientHistory(recoveryMessages, recoveryFiles).messages, files: recoveryFiles,
+            allowPaidModels: settings.allowPaidModels,
+            consentedModel: isModelConsented(settings.activeProvider, settings.activeModel) ? `${settings.activeProvider}:${settings.activeModel}` : undefined,
+          }),
+        })
+        if (!recovery.ok) throw new Error(`Permintaan file utuh gagal (${recovery.status}). File patch tidak diubah.`)
+        let recoveredText = ''
+        await consumeAIStream(recovery, { onDelta: delta => { recoveredText += delta } })
+        return recoveredText
       }
+      savePreChangeSnapshot()
+      const actions = serverFiles.length
+        ? { files: serverFiles, commands: parseAIResponseActions(fullText).commands }
+        : await applyWorkspaceResponse(fullText, files, recoverFullFiles)
+      const parsed = actions.files
+      chat.updateMessage(assistantId, { files: parsed })
+      if (serverFiles.length) await applyFiles(parsed)
 
       // C2: Require user confirmation dialog before executing any model shell commands
       for (const command of actions.commands) {
@@ -481,9 +500,9 @@ export function useAIChat() {
                   for (const file of repairParser.push(delta)) useFileStore.getState().updateFileContent(file.path, file.content)
                 },
               })
-              const repairedFiles = repairParser.getFiles().length ? repairParser.getFiles() : parseAIResponseActions(repairText).files
+              const repairActions = await applyWorkspaceResponse(repairText, currentFiles, instruction => recoverFullFiles(instruction, currentFiles))
+              const repairedFiles = repairActions.files
               if (!repairedFiles.length) break
-              await applyFiles(repairedFiles)
               currentFiles = useFileStore.getState().files
               const previousValidationOutput = validation.output
               validation = await executeWorkspaceCommandWithOutput('npm run build')

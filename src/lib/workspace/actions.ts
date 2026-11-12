@@ -1,6 +1,6 @@
 import { useFileStore } from '@/lib/store/useFileStore'
 import { writeFile, deleteFile, runCommand } from '@/lib/webcontainer'
-import { parseSafeNpmCommand } from '@/lib/ai/parser'
+import { parseAIResponseActions, parseSafeNpmCommand, resolveAIResponseWithFallback, type ParsedAIResponse } from '@/lib/ai/parser'
 import { toast } from 'sonner'
 import type { ParsedFile } from '@/types'
 
@@ -64,6 +64,36 @@ export async function applyWorkspaceFiles(files: ParsedFile[]): Promise<void> {
   if (applied.length > 0) {
     useFileStore.getState().setActiveFile(applied[0].path)
   }
+}
+
+export async function applyWorkspaceResponse(
+  raw: string,
+  sourceFiles: Record<string, string>,
+  requestFullFiles: (instruction: string) => Promise<string>,
+): Promise<ParsedAIResponse> {
+  const completeFiles = new Map(parseAIResponseActions(raw).files.map(file => [file.path, file.content]))
+  let result: ParsedAIResponse
+  try {
+    result = await resolveAIResponseWithFallback(raw, sourceFiles, requestFullFiles)
+  } catch (error) {
+    // Full files may already be visible from streaming; undo only those exact
+    // generated contents, never a user's newer edit, when recovery fails.
+    for (const [path, content] of completeFiles) {
+      if (useFileStore.getState().files[path] !== content) continue
+      if (Object.hasOwn(sourceFiles, path)) await updateWorkspaceFile(path, sourceFiles[path])
+      else useFileStore.getState().removeFile(path)
+    }
+    throw error
+  }
+  const currentFiles = useFileStore.getState().files
+  for (const file of result.files) {
+    const current = currentFiles[file.path]
+    if (current !== sourceFiles[file.path] && current !== completeFiles.get(file.path) && current !== file.content) {
+      throw new Error(`File ${file.path} berubah selama generasi. Perubahan tidak diterapkan; kirim ulang dengan sumber terbaru.`)
+    }
+  }
+  await applyWorkspaceFiles(result.files)
+  return result
 }
 
 /** Every execution path funnels here — the executor validates with the SAME

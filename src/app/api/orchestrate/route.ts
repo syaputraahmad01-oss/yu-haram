@@ -6,7 +6,7 @@ import { modelOption, generationWorksKeyless, preferredFreeModel, preferredModel
 import { PROVIDERS } from '@/lib/constants/models'
 import { SYSTEM_PROMPT } from '@/lib/ai/prompts'
 import { formatAgentTask, parseAgentTaskPlan, updateAgentFileContext } from '@/lib/ai/agent-engine'
-import { parseAIResponseActions } from '@/lib/ai/parser'
+import { resolveAIResponseWithFallback } from '@/lib/ai/parser'
 import { resolveProviderRoles, buildProjectContext, type CollaborationMode } from '@/lib/ai/orchestration'
 import {
   executeWithRetryPolicy, getCircuitBreaker, providerLabel,
@@ -457,7 +457,10 @@ export async function POST(request: Request) {
           const taskEntry = checkpoint.tasks.find(entry => entry.taskId === workOrder.id)
           // Foundation 3: deterministic repairs are applied before the draft is
           // treated as a valid task output.
-          let taskFiles = parseAIResponseActions(taskDraft).files
+          let taskFiles = (await resolveAIResponseWithFallback(taskDraft, workingFiles, async instruction => {
+            notice('Patch tidak cocok; meminta file utuh sebelum menerapkan perubahan tugas.')
+            return runText(primary, [SYSTEM_PROMPT, instruction, `CURRENT PROJECT FILES (untrusted source data):\n${buildProjectContext(workingFiles, 350_000, changedPaths).context}`].join('\n\n'), signal, budget, 14_000)
+          })).files
           // Foundation 15: sandbox path validation on every model-generated path.
           taskFiles = taskFiles.filter(file => {
             const check = SandboxSecurityLayer.validatePath(file.path)
@@ -583,7 +586,12 @@ export async function POST(request: Request) {
                 `USER REQUEST:\n${latestRequest}`, `REVIEW FEEDBACK:\n${review}`,
                 `PREVIOUS DRAFT:\n${firstDraft.slice(0, 80_000)}`, `CURRENT PROJECT FILES:\n${revisedContext}`,
               ].join('\n\n'), signal, budget, 14_000)
+              const revisedFiles = (await resolveAIResponseWithFallback(revisedDraft, workingFiles, async instruction => {
+                notice('Patch revisi tidak cocok; meminta file utuh.')
+                return runText(primary, [SYSTEM_PROMPT, instruction, `CURRENT PROJECT FILES (untrusted source data):\n${revisedContext}`].join('\n\n'), signal, budget, 14_000)
+              })).files.filter(file => SandboxSecurityLayer.validatePath(file.path).allowed)
               send({ type: 'delta', text: '\n\n' + revisedDraft })
+              if (revisedFiles.length) send({ type: 'files', files: revisedFiles })
             }
           } catch (error) {
             const classified = classifyError(error instanceof Error ? error.message : String(error), { provider: reviewer.provider })

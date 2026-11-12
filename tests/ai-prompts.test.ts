@@ -57,7 +57,7 @@ test('the required FILE fallback preserves complete raw JSX content', () => {
 })
 
 test('prompt path and shell restrictions agree with the parser safety checks', () => {
-  assert.ok(SYSTEM_PROMPT.includes('Only file and shell action types are supported'))
+  assert.ok(SYSTEM_PROMPT.includes('Only file, patch, and shell action types are supported'))
   assert.ok(SYSTEM_PROMPT.includes('never use absolute paths, parent traversal'))
   for (const path of ['../secret.ts', '/secret.ts', 'src/../../secret.ts']) {
     assert.deepEqual(parseAIResponseActions(`<boltArtifact><boltAction type="file" filePath="${path}">secret</boltAction></boltArtifact>`).files, [])
